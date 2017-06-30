@@ -952,10 +952,43 @@ bool CoroutineStmtBuilder::makeNewAndDeleteExpr() {
   bool PassAlignment = false;
   SmallVector<Expr *, 1> PlacementArgs;
 
+  if (auto *MD = dyn_cast<CXXMethodDecl>(&FD)) {
+    if (MD->isInstance()) {
+      auto ThisTy = MD->getThisType(S.Context);
+      ExprResult ThisRef =
+          new (S.Context) CXXThisExpr(Loc, ThisTy, /*isImplicit=*/false);
+      if (ThisRef.isInvalid())
+        return false;
+      PlacementArgs.push_back(ThisRef.get());
+    }
+  }
+
+  for (auto *paramDecl : FD.parameters()) {
+    auto Ty = paramDecl->getType();
+    if (Ty->isDependentType())
+      continue;
+
+    ExprResult ParamRef =
+        S.BuildDeclRefExpr(paramDecl, paramDecl->getType(),
+                           ExprValueKind::VK_LValue, Loc); // FIXME: scope?
+    if (ParamRef.isInvalid())
+      return false;
+
+    PlacementArgs.push_back(ParamRef.get());
+  }
+
   S.FindAllocationFunctions(Loc, SourceRange(),
                             /*UseGlobal*/ false, PromiseType,
                             /*isArray*/ false, PassAlignment, PlacementArgs,
-                            OperatorNew, UnusedResult);
+                            OperatorNew, UnusedResult, /*Diagnose*/ false);
+
+  if (!OperatorNew) {
+    PlacementArgs.clear();
+    S.FindAllocationFunctions(Loc, SourceRange(),
+                              /*UseGlobal*/ false, PromiseType,
+                              /*isArray*/ false, PassAlignment, PlacementArgs,
+                              OperatorNew, UnusedResult);
+  }
 
   bool IsGlobalOverload =
       OperatorNew && !isa<CXXRecordDecl>(OperatorNew->getDeclContext());
