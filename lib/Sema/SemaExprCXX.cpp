@@ -2119,7 +2119,7 @@ bool Sema::CheckAllocatedType(QualType AllocType, SourceLocation Loc,
 static bool
 resolveAllocationOverload(Sema &S, LookupResult &R, SourceRange Range,
                           SmallVectorImpl<Expr *> &Args, bool &PassAlignment,
-                          bool Diagnose, FunctionDecl *&Operator,
+                          FunctionDecl *&Operator,
                           OverloadCandidateSet *AlignedCandidates = nullptr,
                           Expr *AlignArg = nullptr) {
   OverloadCandidateSet Candidates(R.getNameLoc(),
@@ -2167,8 +2167,7 @@ resolveAllocationOverload(Sema &S, LookupResult &R, SourceRange Range,
       AlignArg = Args[1];
       Args.erase(Args.begin() + 1);
       return resolveAllocationOverload(S, R, Range, Args, PassAlignment,
-                                       Diagnose, Operator, &Candidates,
-                                       AlignArg);
+                                       Operator, &Candidates, AlignArg);
     }
 
     // MSVC will fall back on trying to find a matching global operator new
@@ -2184,52 +2183,48 @@ resolveAllocationOverload(Sema &S, LookupResult &R, SourceRange Range,
       S.LookupQualifiedName(R, S.Context.getTranslationUnitDecl());
       // FIXME: This will give bad diagnostics pointing at the wrong functions.
       return resolveAllocationOverload(S, R, Range, Args, PassAlignment,
-                                       Diagnose, Operator, nullptr);
+                                       Operator, nullptr);
     }
 
-    if (Diagnose) {
-      S.Diag(R.getNameLoc(), diag::err_ovl_no_viable_function_in_call)
-          << R.getLookupName() << Range;
+    S.Diag(R.getNameLoc(), diag::err_ovl_no_viable_function_in_call)
+      << R.getLookupName() << Range;
 
-      // If we have aligned candidates, only note the align_val_t candidates
-      // from AlignedCandidates and the non-align_val_t candidates from
-      // Candidates.
-      if (AlignedCandidates) {
-        auto IsAligned = [](OverloadCandidate &C) {
-          return C.Function->getNumParams() > 1 &&
-                 C.Function->getParamDecl(1)->getType()->isAlignValT();
-        };
-        auto IsUnaligned = [&](OverloadCandidate &C) { return !IsAligned(C); };
+    // If we have aligned candidates, only note the align_val_t candidates
+    // from AlignedCandidates and the non-align_val_t candidates from
+    // Candidates.
+    if (AlignedCandidates) {
+      auto IsAligned = [](OverloadCandidate &C) {
+        return C.Function->getNumParams() > 1 &&
+               C.Function->getParamDecl(1)->getType()->isAlignValT();
+      };
+      auto IsUnaligned = [&](OverloadCandidate &C) { return !IsAligned(C); };
 
-        // This was an overaligned allocation, so list the aligned candidates
-        // first.
-        Args.insert(Args.begin() + 1, AlignArg);
-        AlignedCandidates->NoteCandidates(S, OCD_AllCandidates, Args, "",
-                                          R.getNameLoc(), IsAligned);
-        Args.erase(Args.begin() + 1);
-        Candidates.NoteCandidates(S, OCD_AllCandidates, Args, "",
-                                  R.getNameLoc(), IsUnaligned);
-      } else {
-        Candidates.NoteCandidates(S, OCD_AllCandidates, Args);
-      }
+      // This was an overaligned allocation, so list the aligned candidates
+      // first.
+      Args.insert(Args.begin() + 1, AlignArg);
+      AlignedCandidates->NoteCandidates(S, OCD_AllCandidates, Args, "",
+                                        R.getNameLoc(), IsAligned);
+      Args.erase(Args.begin() + 1);
+      Candidates.NoteCandidates(S, OCD_AllCandidates, Args, "", R.getNameLoc(),
+                                IsUnaligned);
+    } else {
+      Candidates.NoteCandidates(S, OCD_AllCandidates, Args);
     }
     return true;
 
   case OR_Ambiguous:
-    if (Diagnose) {
-      S.Diag(R.getNameLoc(), diag::err_ovl_ambiguous_call)
-          << R.getLookupName() << Range;
-      Candidates.NoteCandidates(S, OCD_ViableCandidates, Args);
-    }
+    S.Diag(R.getNameLoc(), diag::err_ovl_ambiguous_call)
+      << R.getLookupName() << Range;
+    Candidates.NoteCandidates(S, OCD_ViableCandidates, Args);
     return true;
 
   case OR_Deleted: {
-    if (Diagnose) {
-      S.Diag(R.getNameLoc(), diag::err_ovl_deleted_call)
-          << Best->Function->isDeleted() << R.getLookupName()
-          << S.getDeletedOrUnavailableSuffix(Best->Function) << Range;
-      Candidates.NoteCandidates(S, OCD_AllCandidates, Args);
-    }
+    S.Diag(R.getNameLoc(), diag::err_ovl_deleted_call)
+      << Best->Function->isDeleted()
+      << R.getLookupName()
+      << S.getDeletedOrUnavailableSuffix(Best->Function)
+      << Range;
+    Candidates.NoteCandidates(S, OCD_AllCandidates, Args);
     return true;
   }
   }
@@ -2244,8 +2239,7 @@ bool Sema::FindAllocationFunctions(SourceLocation StartLoc, SourceRange Range,
                                    bool IsArray, bool &PassAlignment,
                                    MultiExprArg PlaceArgs,
                                    FunctionDecl *&OperatorNew,
-                                   FunctionDecl *&OperatorDelete,
-                                   bool Diagnose) {
+                                   FunctionDecl *&OperatorDelete) {
   // --- Choosing an allocation function ---
   // C++ 5.3.4p8 - 14 & 18
   // 1) If UseGlobal is true, only look in the global scope. Else, also look
@@ -2255,7 +2249,7 @@ bool Sema::FindAllocationFunctions(SourceLocation StartLoc, SourceRange Range,
   // 3) The first argument is always size_t. Append the arguments from the
   //   placement form.
 
-  SmallVector<Expr *, 8> AllocArgs;
+  SmallVector<Expr*, 8> AllocArgs;
   AllocArgs.reserve((PassAlignment ? 2 : 1) + PlaceArgs.size());
 
   // We don't care about the actual value of these arguments.
@@ -2263,8 +2257,9 @@ bool Sema::FindAllocationFunctions(SourceLocation StartLoc, SourceRange Range,
   // tree? Or should the consumer just recalculate the value?
   // FIXME: Using a dummy value will interact poorly with attribute enable_if.
   IntegerLiteral Size(Context, llvm::APInt::getNullValue(
-                                   Context.getTargetInfo().getPointerWidth(0)),
-                      Context.getSizeType(), SourceLocation());
+                      Context.getTargetInfo().getPointerWidth(0)),
+                      Context.getSizeType(),
+                      SourceLocation());
   AllocArgs.push_back(&Size);
 
   QualType AlignValT = Context.VoidTy;
@@ -2319,7 +2314,7 @@ bool Sema::FindAllocationFunctions(SourceLocation StartLoc, SourceRange Range,
     R.suppressDiagnostics();
 
     if (resolveAllocationOverload(*this, R, Range, AllocArgs, PassAlignment,
-                                  Diagnose, OperatorNew))
+                                  OperatorNew))
       return true;
   }
 

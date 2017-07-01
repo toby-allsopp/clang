@@ -5073,8 +5073,7 @@ public:
                                bool UseGlobal, QualType AllocType, bool IsArray,
                                bool &PassAlignment, MultiExprArg PlaceArgs,
                                FunctionDecl *&OperatorNew,
-                               FunctionDecl *&OperatorDelete,
-                               bool Diagnose = true);
+                               FunctionDecl *&OperatorDelete);
   void DeclareGlobalNewDelete();
   void DeclareGlobalAllocationFunction(DeclarationName Name, QualType Return,
                                        ArrayRef<QualType> Params);
