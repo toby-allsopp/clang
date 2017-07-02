@@ -78,13 +78,13 @@ static QualType lookupPromiseType(Sema &S, const FunctionDecl *FD,
   Args.addArgument(TemplateArgumentLoc(
       TemplateArgument(FnType->getReturnType()),
       S.Context.getTrivialTypeSourceInfo(FnType->getReturnType(), KwLoc)));
-  // FIXME: If the function is a non-static member function, add the type
+  // If the function is a non-static member function, add the type
   // of the implicit object parameter before the formal parameters.
-  if (auto *MD = dyn_cast<CXXMethodDecl>(FD)) {
-    if (!MD->isStatic()) {
-      auto T = MD->getThisType(S.Context);
+  if (auto *MD = dyn_cast_or_null<CXXMethodDecl>(FD)) {
+    if (MD->isInstance()) {
+      QualType T = MD->getThisType(S.Context);
       Args.addArgument(TemplateArgumentLoc(
-          TemplateArgument(T), S.Context.getTrivialTypeSourceInfo(T)));
+          TemplateArgument(T), S.Context.getTrivialTypeSourceInfo(T, KwLoc)));
     }
   }
   for (QualType T : FnType->getParamTypes())
@@ -99,6 +99,7 @@ static QualType lookupPromiseType(Sema &S, const FunctionDecl *FD,
   if (S.RequireCompleteType(KwLoc, CoroTrait,
                             diag::err_coroutine_type_missing_specialization))
     return QualType();
+  assert(!CoroTrait->isDependentType());
 
   auto *RD = CoroTrait->getAsCXXRecordDecl();
   assert(RD && "specialization of class template is not a class?");
@@ -433,8 +434,14 @@ static ExprResult buildPromiseCall(Sema &S, VarDecl *Promise,
 VarDecl *Sema::buildCoroutinePromise(SourceLocation Loc) {
   assert(isa<FunctionDecl>(CurContext) && "not in a function scope");
   auto *FD = cast<FunctionDecl>(CurContext);
+  bool IsThisDependentType = [&] {
+    if (auto *MD = dyn_cast_or_null<CXXMethodDecl>(FD))
+      return MD->isInstance() && MD->getThisType(Context)->isDependentType();
+    else
+      return false;
+  }();
 
-  QualType T = FD->getType()->isDependentType()
+  QualType T = FD->getType()->isDependentType() || IsThisDependentType
                    ? Context.DependentTy
                    : lookupPromiseType(*this, FD, Loc, FD->getLocation());
   if (T.isNull())
