@@ -13,6 +13,7 @@
 
 #include "CoroutineStmtBuilder.h"
 #include "clang/AST/Decl.h"
+#include "clang/AST/DeclCXX.h"
 #include "clang/AST/ExprCXX.h"
 #include "clang/AST/StmtCXX.h"
 #include "clang/Lex/Preprocessor.h"
@@ -43,9 +44,10 @@ static bool lookupMember(Sema &S, const char *Name, CXXRecordDecl *RD,
 
 /// Look up the std::coroutine_traits<...>::promise_type for the given
 /// function type.
-static QualType lookupPromiseType(Sema &S, const FunctionProtoType *FnType,
+static QualType lookupPromiseType(Sema &S, const FunctionDecl *FD,
                                   SourceLocation KwLoc,
                                   SourceLocation FuncLoc) {
+  const FunctionProtoType *FnType = FD->getType()->castAs<FunctionProtoType>();
   // FIXME: Cache std::coroutine_traits once we've found it.
   NamespaceDecl *StdExp = S.lookupStdExperimentalNamespace();
   if (!StdExp) {
@@ -76,8 +78,15 @@ static QualType lookupPromiseType(Sema &S, const FunctionProtoType *FnType,
   Args.addArgument(TemplateArgumentLoc(
       TemplateArgument(FnType->getReturnType()),
       S.Context.getTrivialTypeSourceInfo(FnType->getReturnType(), KwLoc)));
-  // FIXME: If the function is a non-static member function, add the type
+  // If the function is a non-static member function, add the type
   // of the implicit object parameter before the formal parameters.
+  if (auto *MD = dyn_cast_or_null<CXXMethodDecl>(FD)) {
+    if (MD->isInstance()) {
+      QualType T = MD->getThisType(S.Context);
+      Args.addArgument(TemplateArgumentLoc(
+          TemplateArgument(T), S.Context.getTrivialTypeSourceInfo(T, KwLoc)));
+    }
+  }
   for (QualType T : FnType->getParamTypes())
     Args.addArgument(TemplateArgumentLoc(
         TemplateArgument(T), S.Context.getTrivialTypeSourceInfo(T, KwLoc)));
@@ -424,12 +433,17 @@ static ExprResult buildPromiseCall(Sema &S, VarDecl *Promise,
 VarDecl *Sema::buildCoroutinePromise(SourceLocation Loc) {
   assert(isa<FunctionDecl>(CurContext) && "not in a function scope");
   auto *FD = cast<FunctionDecl>(CurContext);
+  bool IsThisDependentType = [&] {
+    if (auto *MD = dyn_cast_or_null<CXXMethodDecl>(FD))
+      return MD->isInstance() && MD->getThisType(Context)->isDependentType();
+    else
+      return false;
+  }();
 
   QualType T =
-      FD->getType()->isDependentType()
+      FD->getType()->isDependentType() || IsThisDependentType
           ? Context.DependentTy
-          : lookupPromiseType(*this, FD->getType()->castAs<FunctionProtoType>(),
-                              Loc, FD->getLocation());
+          : lookupPromiseType(*this, FD, Loc, FD->getLocation());
   if (T.isNull())
     return nullptr;
 
